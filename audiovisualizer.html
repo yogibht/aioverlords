@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+        <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+        <meta http-equiv="Pragma" content="no-cache">
+        <meta http-equiv="Expires" content="0">
+        
+        <title>Audio Visualizer</title>
+
+        <style>
+            body, html{
+                padding: 0;
+                margin: 0;
+                display: flex;
+                flex-direction: column;
+                max-width: 99vw;
+            }
+            canvas { border: 1px solid black; }
+        </style>
+
+    </head>
+    <body>
+
+        <p id="loadingMessage" style="display: none;">Loading audio file...</p>
+        
+        <script type="module">
+
+            class AudioVisualizer {
+
+                constructor(){
+                    console.log("Constructing Audio Visualizer...");
+
+                    this.setupEventListeners();
+                }
+
+                setupEventListeners(){
+                    const fileInput = document.createElement("input");
+                    fileInput.setAttribute("id", "inputButton");
+                    fileInput.type = "file";
+                    fileInput.accept = "audio/mp3";
+
+                    fileInput.addEventListener("change", this.loadFile.bind(this));
+
+                    document.body.appendChild(fileInput);
+
+                    this.toggleLoadingMessage(false);
+                }
+
+                toggleLoadingMessage(toggleState){
+                    const loadingMessage = document.getElementById("loadingMessage");
+                    const inputButton = document.getElementById("inputButton");
+
+                    if(toggleState){
+                        loadingMessage.style.display = "block";
+                        inputButton.style.display = "none";
+                    }
+                    else{
+                        loadingMessage.style.display = "none";
+                        inputButton.style.display = "block";
+                    }
+                }
+
+                async loadFile(fileEvent){
+                    this.toggleLoadingMessage(true);
+
+                    const file = fileEvent.target.files[0];
+                    if (file) {
+                        const reader = new FileReader();
+
+                        reader.addEventListener("load", async ()=>{
+                            const audioContext = new AudioContext();
+                            const response = await fetch(reader.result);
+                            const arrayBuffer = await response.arrayBuffer();
+                            const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+                            const PCMData = await this.generatePCMDataset(audioBuffer, audioContext.sampleRate);
+
+                            const audio = new Audio();
+                            audio.src = reader.result;
+
+                            const combinations = [
+                                { name: "Bass Drum", color: [255, 0, 0], frameSize: 1024, factor: 1.5, minFrequency: 60, maxFrequency: 250 },
+                                { name: "Snare Drum", color: [0, 0, 255], frameSize: 1024, factor: 2, minFrequency: 250, maxFrequency: 400 },
+                                { name: "Guitar", color: [0, 128, 0], frameSize: 1024, factor: 2.5, minFrequency: 400, maxFrequency: 880 },
+                                { name: "Violin", color: [255, 255, 0], frameSize: 2048, factor: 1.5, minFrequency: 880, maxFrequency: 1760 },
+                                { name: "Piano", color: [128, 0, 128], frameSize: 2048, factor: 2, minFrequency: 27.5, maxFrequency: 4186 },
+                                { name: "Trumpet", color: [255, 165, 0], frameSize: 2048, factor: 2.5, minFrequency: 164.81, maxFrequency: 987.77 },
+                                { name: "Cello", color: [255, 192, 203], frameSize: 4096, factor: 1.5, minFrequency: 65.41, maxFrequency: 392 },
+                                { name: "Flute", color: [0, 255, 255], frameSize: 4096, factor: 2, minFrequency: 110, maxFrequency: 659.25 },
+                                { name: "Saxophone", color: [255, 0, 255], frameSize: 4096, factor: 2.5, minFrequency: 196, maxFrequency: 1174.66 },
+                            ];
+
+                            this.combinations = combinations.map(({ name, color, frameSize, factor, minFrequency, maxFrequency }) => {
+                                let beats = this.detectBeats(PCMData, frameSize, factor, minFrequency, maxFrequency, audioContext.sampleRate);
+                                const processedBeats = beats.map(beat => beat.flux);
+
+                                const canvas = document.createElement("canvas");
+                                canvas.width = window.innerWidth;
+                                canvas.height = 50;
+                                document.body.appendChild(canvas);
+                                
+                                this.drawBeats(processedBeats, name, 0, audio.duration, canvas, color); // Draw the initial state
+                                return { name, color, frameSize, factor, minFrequency, maxFrequency, beats, processedBeats, canvas, PCMData };
+                            });
+
+                            this.setupAudioControls(audio);
+                        });
+
+                        reader.readAsDataURL(file);
+                    }
+                }
+
+                drawBeats(beats, name, currentTime, duration, canvas, color = [0, 0, 0]) {
+                    const ctx = canvas.getContext("2d");
+                    ctx.beginPath();
+
+                    let x = currentTime / duration * canvas.width;
+                    ctx.clearRect(0, 0, canvas.width, canvas.height); // Clear the canvas
+
+                    // Convert the RGB color to HSL
+                    let hsl = this.rgbToHsl(color[0], color[1], color[2]);
+
+                    // Draw the beats up to the current play time
+                    for (let i = 0; i < beats.length; i++) {
+                        let beatX = i / beats.length * canvas.width;
+                        if (beatX > x) {
+                            break;
+                        }
+                        let beatY = beats[i] * canvas.height;
+
+                        // Adjust the lightness based on the beat size, capped between 20 and 80
+                        let lightness = Math.max(20, Math.min(80, beats[i] * 100));
+                        ctx.strokeStyle = `hsl(${hsl[0]}, ${hsl[1]}%, ${lightness}%)`;
+
+                        ctx.lineTo(beatX, beatY);
+                    }
+                    ctx.stroke();
+
+                    // Add the label
+                    ctx.font = "11px Arial";
+                    ctx.fillStyle = `rgb(${color[0]}, ${color[1]}, ${color[2]})`; // Set the fill color for the text
+                    ctx.fillText(name, 5, 20);
+                }
+
+                setupAudioControls(audio) {
+                    this.toggleLoadingMessage(false);
+
+                    const playButton = document.createElement("button");
+                    playButton.innerText = "Play";
+                    playButton.addEventListener("click", function() {
+                        audio.play();
+                    });
+
+                    const pauseButton = document.createElement("button");
+                    pauseButton.innerText = "Pause";
+                    pauseButton.addEventListener("click", function() {
+                        audio.pause();
+                    });
+
+                    const stopButton = document.createElement("button");
+                    stopButton.innerText = "Stop";
+                    stopButton.addEventListener("click", function() {
+                        audio.pause();
+                        audio.currentTime = 0;
+                    });
+
+                    const timeScrubber = document.createElement("input");
+                    timeScrubber.setAttribute("id", "scrubber");
+                    timeScrubber.type = "range";
+                    timeScrubber.min = 0;
+                    timeScrubber.max = audio.duration;
+                    timeScrubber.value = 0;
+                    timeScrubber.addEventListener("input", function() {
+                        audio.currentTime = timeScrubber.value;
+                    });
+
+                    document.body.appendChild(playButton);
+                    document.body.appendChild(pauseButton);
+                    document.body.appendChild(stopButton);
+                    document.body.appendChild(timeScrubber);
+
+                    audio.addEventListener("loadedmetadata", function() {
+                        timeScrubber.max = audio.duration;
+                    });
+
+                    audio.addEventListener("canplaythrough", () => {
+                        this.toggleLoadingMessage(false);
+                    });
+
+                    audio.addEventListener("timeupdate", () => {
+                        timeScrubber.value = audio.currentTime;
+                        for (let combination of this.combinations) {
+                            this.drawBeats(combination.processedBeats, combination.name, audio.currentTime, audio.duration, combination.canvas, combination.color);
+                        }
+                    });
+                }
+
+                generatePCMDataset(audioBuffer, sampleRate){
+                    return new Promise((resolve, reject)=>{
+                        // Create an OfflineAudioContext with the same number of channels and the same sample rate as the AudioContext
+                        let offlineAudioContext = new OfflineAudioContext(audioBuffer.numberOfChannels, audioBuffer.length, sampleRate);
+
+                        // Create a BufferSourceNode using the AudioBuffer
+                        let source = offlineAudioContext.createBufferSource();
+                        source.buffer = audioBuffer;
+
+                        // Connect the BufferSourceNode to the OfflineAudioContext
+                        source.connect(offlineAudioContext.destination);
+
+                        // Start the BufferSourceNode
+                        source.start();
+
+                        // Start the OfflineAudioContext
+                        offlineAudioContext.startRendering();
+
+                        // When the OfflineAudioContext has finished rendering...
+                        offlineAudioContext.oncomplete = function(event) {
+                            // Here, event.renderedBuffer contains the PCM data
+                            let pcmData = event.renderedBuffer.getChannelData(0); // Get the PCM data for the first channel
+
+                            resolve(pcmData);
+                        };
+                    });
+                }
+
+                isPowerOf2(n) {
+                    return n && (n & (n - 1)) === 0;
+                }
+
+                nextPowerOf2(n) {
+                    return Math.pow(2, Math.ceil(Math.log2(n)));
+                }
+
+                detectBeats(pcmData, frameSize, factor, minFrequency, maxFrequency, sampleRate) {
+                    if (!this.isPowerOf2(frameSize)) {
+                        frameSize = this.nextPowerOf2(frameSize);
+                    }
+                    let frames = this.splitIntoFrames(pcmData, frameSize);
+                    let spectra = frames.map(frame => this.calculateSpectrum(frame, minFrequency, maxFrequency, sampleRate));
+
+                    let beats = [];
+                    let spectralFluxes = this.calculateSpectralFlux(spectra);
+                    let thresholdFluxes = this.thresholdFluxes(spectralFluxes, factor);
+                    for (let i = 0; i < spectralFluxes.length; i++) {
+                        if (spectralFluxes[i] > thresholdFluxes[i]) {
+                            beats.push({
+                                flux: thresholdFluxes[i],
+                                time: i / frameSize,
+                                size: spectralFluxes[i] // Set the size of the beat to the spectral flux
+                            });
+                        }
+                    }
+                    return beats;
+                }
+
+                calculateSpectrum(frame, minFrequency, maxFrequency, sampleRate) {
+                    let fft = new FFT(frame.length, FFT.BlackMannHarris);
+                    let spectrum = fft.forward(frame);
+
+                    // Apply the bandpass filter
+                    if (minFrequency && maxFrequency) {
+                        let minIndex = Math.round(minFrequency * frame.length / sampleRate);
+                        let maxIndex = Math.round(maxFrequency * frame.length / sampleRate);
+                        for (let i = 0; i < spectrum.length; i++) {
+                            if (i < minIndex || i > maxIndex) {
+                                spectrum[i] = 0;
+                            }
+                        }
+                    }
+
+                    return spectrum;
+                }
+
+                calculateSpectralFlux(spectra) {
+                    let fluxes = [];
+                    for (let i = 1; i < spectra.length; i++) {
+                        let flux = 0;
+                        for (let j = 0; j < spectra[i].length; j++) {
+                            let value = spectra[i][j] - spectra[i - 1][j];
+                            flux += value < 0 ? 0 : value;
+                        }
+                        fluxes.push(flux);
+                    }
+                    return fluxes;
+                }
+
+                thresholdFluxes(fluxes, factor) {
+                    let threshold = this.calculateAverage(fluxes) * factor; // Use the factor parameter
+                    let beats = fluxes.map(flux => flux > threshold ? 1 : 0);
+                    return beats;
+                }
+
+                splitIntoFrames(pcmData, frameSize) {
+                    let frames = [];
+                    for (let i = 0; i < pcmData.length; i += frameSize) {
+                        let frame = pcmData.slice(i, i + frameSize);
+                        if (frame.length < frameSize) {
+                            let paddedFrame = new Float32Array(frameSize);
+                            paddedFrame.set(frame);
+                            frame = paddedFrame;
+                        }
+                        frames.push(frame);
+                    }
+                    return frames;
+                }
+
+                calculateEnergy(frame) {
+                    return frame.reduce((sum, sample) => sum + sample * sample, 0);
+                }
+
+                calculateAverage(array) {
+                    return array.reduce((sum, value) => sum + value, 0) / array.length;
+                }
+
+                rgbToHsl(r, g, b) {
+                    r /= 255, g /= 255, b /= 255;
+                    let max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+                    let h = max === min ? 0 : max === r ? ((g - b) / d + (g < b ? 6 : 0)) / 6 : max === g ? ((b - r) / d + 2) / 6 : ((r - g) / d + 4) / 6;
+                    let l = (max + min) / 2;
+                    let s = max === min ? 0 : l > 0.5 ? d / (2 - max - min) : d / (max + min);
+                    return [h * 360, s * 100, l * 100];
+                }
+            }
+
+            class FFT {
+                constructor(size, windowFunction) {
+                    this.size = size;
+                    this.windowFunction = windowFunction;
+                    this.cosTable = new Array(size / 2);
+                    this.sinTable = new Array(size / 2);
+                    for (let i = 0; i < size / 2; i++) {
+                        this.cosTable[i] = Math.cos(2 * Math.PI * i / size);
+                        this.sinTable[i] = Math.sin(2 * Math.PI * i / size);
+                    }
+                }
+
+                forward(real) {
+                    const size = this.size;
+                    const cosTable = this.cosTable;
+                    const sinTable = this.sinTable;
+
+                    if (real.length !== size) throw new Error("Mismatched lengths");
+
+                    // Apply window function if one was provided
+                    if (this.windowFunction) {
+                        real = real.map((value, i) => value * this.windowFunction(i, size));
+                    }
+
+                    let levels = -1;
+                    for (let i = 0; i < 32; i++) {
+                        if (1 << i === size) levels = i;  // Equal to log2(size)
+                    }
+                    if (levels === -1) throw new Error("Length is not a power of 2");
+
+                    const cos = new Array(size / 2);
+                    const sin = new Array(size / 2);
+                    const imag = new Array(size).fill(0); // Initialize the imaginary part as zeros
+
+                    for (let size = 2; size <= this.size; size *= 2) {
+                        let halfsize = size / 2;
+                        let tablestep = this.size / size;
+                        for (let i = 0; i < halfsize; i++) {
+                            cos[i] = cosTable[i * tablestep];
+                            sin[i] = sinTable[i * tablestep];
+                        }
+                        for (let i = 0; i < this.size; i += size) {
+                            for (let j = i, k = 0; j < i + halfsize; j++, k++) {
+                                let tpre =  real[j+halfsize] * cos[k] + imag[j+halfsize] * sin[k];
+                                let tpim = -real[j+halfsize] * sin[k] + imag[j+halfsize] * cos[k];
+                                real[j + halfsize] = real[j] - tpre;
+                                imag[j + halfsize] = imag[j] - tpim;
+                                real[j] += tpre;
+                                imag[j] += tpim;
+                            }
+                        }
+                    }
+
+                    return real;
+                }
+            }
+            FFT.BlackMannHarris = (i, size) => 0.35875 - 0.48829 * Math.cos((2 * Math.PI * i) / (size - 1)) 
+            + 0.14128 * Math.cos((4 * Math.PI * i) / (size - 1)) 
+            - 0.01168 * Math.cos((6 * Math.PI * i) / (size - 1));
+
+            window.addEventListener("DOMContentLoaded", async ()=>{
+                const audioVisualizer = new AudioVisualizer();
+            });
+
+        </script> 
+
+    </body>
+</html>
